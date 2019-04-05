@@ -15,14 +15,16 @@ namespace CS432_Server
 {
     public struct Client
     {
-        public Client(ref Socket sock, Byte[] password)
+        public Client(ref Socket sock, String username, Byte[] password)
         {
             this.socket = sock;
             this.password = password;
+            this.username = username;
         }
 
         public Socket socket;
         public Byte[] password;
+        public String username;
     }
 
     public partial class SecureServerForm : Form
@@ -86,15 +88,39 @@ namespace CS432_Server
             }
 
             // 3 - if everything is okay, add the new connection to the class-wide clients database & list the client
-            clients[username] = new Client(ref sock, passwordHash);
-            listView_Users.Items.Add(username);
+            clients[username] = new Client(ref sock, username, passwordHash);
+            listNewUser(username);
 
             return username;
         }
 
         private void log(String message)
         {
-            textBox_Info.AppendText(message + "\n");
+            if (InvokeRequired)
+                Invoke(new Action<string>(textBox_Info.AppendText), message + "\n");
+            else
+                textBox_Info.AppendText(message + "\n");
+        }
+
+        private void destroyClient(String username)
+        {
+            clients.Remove(username);
+            listView_Users.Invoke(
+                new MethodInvoker(delegate ()
+                {
+                    listView_Users.Items.RemoveByKey(username);
+                })
+            );
+        }
+
+        private void listNewUser(String username)
+        {
+            listView_Users.Invoke(
+                new MethodInvoker(delegate ()
+                {
+                    listView_Users.Items.Add(username);
+                })
+            );
         }
 
         private void handleNewConnection()
@@ -105,9 +131,8 @@ namespace CS432_Server
                 {
                     Socket clientSocket = serverSocket.Accept();
 
-
                     String remoteIP = clientSocket.RemoteEndPoint.ToString();
-                    Invoke(new Action<string>(log), "Incoming connection from " + remoteIP);
+                    log("Connection request from " + remoteIP);
 
                     string connectedUser = processIncommingConnection(ref clientSocket);
 
@@ -123,8 +148,21 @@ namespace CS432_Server
                 {
                     if (!serverActive)
                     {
-                        Invoke(new Action<string>(log), "Stopped listening for incoming connections");
+                        log("Stopped listening for incoming connections");;
                     }
+                }
+            }
+        }
+
+        private void listenClient(ref Client client)
+        {
+            while (serverActive)
+            {
+                bool socketActive = client.socket.Poll(1000, SelectMode.SelectWrite);
+                if (!socketActive)
+                {
+                    log("User " + client.username + " disconnected");
+                    destroyClient(client.username);
                 }
             }
         }
