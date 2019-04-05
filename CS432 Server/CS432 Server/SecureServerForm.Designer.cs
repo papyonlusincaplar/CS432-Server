@@ -30,9 +30,9 @@
         {
             this.listView_Users = new System.Windows.Forms.ListView();
             this.label_listViewUsers = new System.Windows.Forms.Label();
-            this.textBox1 = new System.Windows.Forms.TextBox();
+            this.textBox_Info = new System.Windows.Forms.TextBox();
             this.label_infoDisplayLabel = new System.Windows.Forms.Label();
-            this.textBox2 = new System.Windows.Forms.TextBox();
+            this.textBox_Port = new System.Windows.Forms.TextBox();
             this.label = new System.Windows.Forms.Label();
             this.button_StartServer = new System.Windows.Forms.Button();
             this.SuspendLayout();
@@ -54,14 +54,14 @@
             this.label_listViewUsers.TabIndex = 1;
             this.label_listViewUsers.Text = "Online Users";
             // 
-            // textBox1
+            // textBox_Info
             // 
-            this.textBox1.Location = new System.Drawing.Point(21, 162);
-            this.textBox1.Multiline = true;
-            this.textBox1.Name = "textBox1";
-            this.textBox1.ReadOnly = true;
-            this.textBox1.Size = new System.Drawing.Size(424, 237);
-            this.textBox1.TabIndex = 2;
+            this.textBox_Info.Location = new System.Drawing.Point(21, 162);
+            this.textBox_Info.Multiline = true;
+            this.textBox_Info.Name = "textBox_Info";
+            this.textBox_Info.ReadOnly = true;
+            this.textBox_Info.Size = new System.Drawing.Size(424, 237);
+            this.textBox_Info.TabIndex = 2;
             // 
             // label_infoDisplayLabel
             // 
@@ -72,12 +72,12 @@
             this.label_infoDisplayLabel.TabIndex = 3;
             this.label_infoDisplayLabel.Text = "INFO";
             // 
-            // textBox2
+            // textBox_Port
             // 
-            this.textBox2.Location = new System.Drawing.Point(21, 64);
-            this.textBox2.Name = "textBox2";
-            this.textBox2.Size = new System.Drawing.Size(81, 20);
-            this.textBox2.TabIndex = 4;
+            this.textBox_Port.Location = new System.Drawing.Point(21, 64);
+            this.textBox_Port.Name = "textBox_Port";
+            this.textBox_Port.Size = new System.Drawing.Size(81, 20);
+            this.textBox_Port.TabIndex = 4;
             // 
             // label
             // 
@@ -96,6 +96,7 @@
             this.button_StartServer.TabIndex = 6;
             this.button_StartServer.Text = "Start Server";
             this.button_StartServer.UseVisualStyleBackColor = true;
+            this.button_StartServer.Click += new System.EventHandler(this.button_StartServer_Click);
             // 
             // SecureServerForm
             // 
@@ -104,9 +105,9 @@
             this.ClientSize = new System.Drawing.Size(584, 411);
             this.Controls.Add(this.button_StartServer);
             this.Controls.Add(this.label);
-            this.Controls.Add(this.textBox2);
+            this.Controls.Add(this.textBox_Port);
             this.Controls.Add(this.label_infoDisplayLabel);
-            this.Controls.Add(this.textBox1);
+            this.Controls.Add(this.textBox_Info);
             this.Controls.Add(this.label_listViewUsers);
             this.Controls.Add(this.listView_Users);
             this.Name = "SecureServerForm";
@@ -120,9 +121,9 @@
 
         private System.Windows.Forms.ListView listView_Users;
         private System.Windows.Forms.Label label_listViewUsers;
-        private System.Windows.Forms.TextBox textBox1;
+        private System.Windows.Forms.TextBox textBox_Info;
         private System.Windows.Forms.Label label_infoDisplayLabel;
-        private System.Windows.Forms.TextBox textBox2;
+        private System.Windows.Forms.TextBox textBox_Port;
         private System.Windows.Forms.Label label;
         private System.Windows.Forms.Button button_StartServer;
     }
