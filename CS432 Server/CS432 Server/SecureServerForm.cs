@@ -136,8 +136,10 @@ namespace CS432_Server
                 return "";
             }
 
-            Byte[] passwordHash = buffer.Take(16).ToArray();
-            String username = Encoding.Default.GetString(buffer.Skip(16).ToArray());
+            Byte[] decryptedBuffer = decryptWithRSA3072(buffer);
+
+            Byte[] passwordHash = decryptedBuffer.Take(16).ToArray();
+            String username = Encoding.Default.GetString(decryptedBuffer.Skip(16).ToArray());
 
             // 2 - check if the username already exists, then act accordingly
             if (clients.ContainsKey(username))
@@ -257,11 +259,17 @@ namespace CS432_Server
         }
 
         // Cryptography
-        static byte[] decryptWithAES128(string input, byte[] key, byte[] IV)
+        byte[] decryptWithRSA3072(byte[] byteInput)
         {
-            // convert input string to byte array
-            byte[] byteInput = Encoding.Default.GetBytes(input);
+            // create RSA object from System.Security.Cryptography
+            RSACryptoServiceProvider rsaObject = new RSACryptoServiceProvider(3072);
+            // set RSA object with xml string
+            rsaObject.FromXmlString(Encoding.Default.GetString(encryptionKey));
+            return rsaObject.Decrypt(byteInput, true);
+        }
 
+        static byte[] decryptWithAES128(byte[] byteInput, byte[] key, byte[] IV)
+        {
             // create AES object from System.Security.Cryptography
             RijndaelManaged aesObject = new RijndaelManaged();
             // since we want to use AES-128
@@ -297,6 +305,15 @@ namespace CS432_Server
             return result;
         }
 
+        public static byte[] hexStringToByteArray(string hex)
+        {
+            int numberChars = hex.Length;
+            byte[] bytes = new byte[numberChars / 2];
+            for (int i = 0; i < numberChars; i += 2)
+                bytes[i / 2] = Convert.ToByte(hex.Substring(i, 2), 16);
+            return bytes;
+        }
+
         private void loadKeys()
         {
             String encryptedEncryptionKeysStr;
@@ -312,7 +329,7 @@ namespace CS432_Server
             {
                 encryptedVerificationKeysStr = fileReader.ReadLine();
             }
-
+        
             String passphrase = "Bohemian";
             Byte[] hash = hashWithSHA256(passphrase);
 
@@ -321,10 +338,9 @@ namespace CS432_Server
 
             try
             {
-                encryptionKey = decryptWithAES128(encryptedEncryptionKeysStr, aesKey, aesIV);
-                String sss = Encoding.Default.GetString(encryptionKey);
-
-
+                encryptionKey = decryptWithAES128(hexStringToByteArray(encryptedEncryptionKeysStr), aesKey, aesIV);
+                verificationKey = decryptWithAES128(hexStringToByteArray(encryptedVerificationKeysStr), aesKey, aesIV);
+                log("Encryption and verification keys have been loaded from the file system");
             }
             catch
             {
