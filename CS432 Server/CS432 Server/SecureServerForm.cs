@@ -127,14 +127,16 @@ namespace CS432_Server
         private String processIncommingConnection(ref Socket sock)
         {
             // 1 - initialize a buffer for the incoming message and listen for the message
-            sock.ReceiveTimeout = 2000;
-            Byte[] buffer = new byte[256];
+            sock.ReceiveTimeout = 20000;
+            Byte[] buffer = new byte[2048];
             int received_bytes = sock.Receive(buffer);
 
             if (received_bytes == 0)
             {
                 return "";
             }
+
+            buffer = buffer.Take(received_bytes).ToArray();
 
             Byte[] decryptedBuffer = decryptWithRSA3072(buffer);
 
@@ -176,10 +178,16 @@ namespace CS432_Server
                     if (connectedUser == "")
                     {
                         log("Connection from " + remoteIP + " is rejected");
+                        clientSocket.Send(encryptWithRSA3072("error"));
                         continue;
                     }
 
                     log("Connected to user: " + connectedUser);
+                    clientSocket.Send(encryptWithRSA3072("success"));
+                }
+                catch (CryptographicException e)
+                {
+                    log("Cryptographic Exception occured: " + e.Message);
                 }
                 catch
                 {
@@ -266,6 +274,17 @@ namespace CS432_Server
             // set RSA object with xml string
             rsaObject.FromXmlString(Encoding.Default.GetString(encryptionKey));
             return rsaObject.Decrypt(byteInput, true);
+        }
+
+        byte[] encryptWithRSA3072(string input)
+        {
+            // convert input string to byte array
+            byte[] byteInput = Encoding.Default.GetBytes(input);
+            // create RSA object from System.Security.Cryptography
+            RSACryptoServiceProvider rsaObject = new RSACryptoServiceProvider(3072);
+            // set RSA object with xml string
+            rsaObject.FromXmlString(Encoding.Default.GetString(encryptionKey));
+            return rsaObject.Encrypt(byteInput, true);
         }
 
         static byte[] decryptWithAES128(byte[] byteInput, byte[] key, byte[] IV)
