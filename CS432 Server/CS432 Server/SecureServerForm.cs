@@ -15,25 +15,35 @@ using System.Security.Cryptography;
 
 namespace CS432_Server
 {
-    public struct Client
+    public class Client
     {
         public Client(ref Socket sock, String username, Byte[] password)
         {
             this.socket = sock;
             this.password = password;
             this.username = username;
+            this.alive = true;
+            this.listening = true;
         }
 
         public Socket socket;
         public Byte[] password;
         public String username;
+        public bool alive; // has the server decided to terminate the connection?
+        public bool listening; // did client send a connection termination request?
+        public Byte[] authChallengeValue = null;
+        public bool isAuthenticated = false;
     }
 
     public partial class SecureServerForm : Form
     {
         // Class fields
         const Int32 INVALID = -1;
+        private RNGCryptoServiceProvider Rand = new RNGCryptoServiceProvider();
+        String databaseFile = "database.txt";
+
         Dictionary<String, Client> clients = new Dictionary<string, Client>();
+        Dictionary<String, Byte[]> enrolledMembers = new Dictionary<String, Byte[]>();
 
         Socket serverSocket;
 
@@ -43,11 +53,14 @@ namespace CS432_Server
         byte[] encryptionKey;
         byte[] verificationKey;
 
+        Int16 userTempId = 0;
+
         // Constructors
         public SecureServerForm()
         {
             InitializeComponent();
             loadKeys();
+            loadEnrolledMembers();
         }
 
         // Utility
@@ -81,13 +94,22 @@ namespace CS432_Server
                 textBox_Info.AppendText(message + "\n");
         }
 
-        private void destroyClient(String username)
+        private void destroyActiveClient(String clientId)
         {
-            clients.Remove(username);
+            Client client = clients[clientId];
+            client.listening = false;
+            
+            // wait for listener thread for this client to terminate
+            while (client.alive)
+            {
+                Thread.Sleep(25);
+            }
+            clients.Remove(clientId);
+
             listView_Users.Invoke(
                 new MethodInvoker(delegate ()
                 {
-                    listView_Users.Items.RemoveByKey(username);
+                    listView_Users.Items.RemoveByKey(clientId);
                 })
             );
         }
@@ -112,57 +134,182 @@ namespace CS432_Server
             );
         }
 
-        private void parseMessage(String message, String username)
+        private Byte[] random128bit()
         {
-            String[] tokens = message.Split('|');
-            switch (tokens[0])
+            byte[] randBytes = new byte[16];
+            Rand.GetBytes(randBytes);
+
+            return randBytes;
+        }
+
+        private static string generateHexStringFromByteArray(byte[] input)
+        {
+            string hexString = BitConverter.ToString(input);
+            return hexString.Replace("-", "");
+        }
+
+        private static byte[] hexStringToByteArray(string hex)
+        {
+            int numberChars = hex.Length;
+            byte[] bytes = new byte[numberChars / 2];
+            for (int i = 0; i < numberChars; i += 2)
+                bytes[i / 2] = Convert.ToByte(hex.Substring(i, 2), 16);
+            return bytes;
+        }
+
+        private String getClientId()
+        {
+            String tempId = "__client_" + userTempId.ToString();
+            userTempId++;
+            return tempId;
+        }
+
+        // Networking
+        private void parseMessage(String message, String clientId)
+        {
+            char flag = message[0];
+            String content = message.Substring(2);
+
+            Socket sock = clients[clientId].socket;
+
+            switch (flag)
             {
-                case "m":
-                    log(username + ": " + message);
+                case 'm': // broadcast message sent by the client
+                    log(sock.RemoteEndPoint.ToString() + ": " + content);
+                    break;
+                case 'a': // authroization request
+                    initiateAuthentication(clientId, content);
+                    break;
+                case 'e': // enrollment request
+                    enrollUser(clientId, Encoding.Default.GetBytes(content));
+                    break;
+                case 'h':
+                    verifyAuthentication(clientId, Encoding.Default.GetBytes(content));
+                    break;
+                case 'd':
+                    destroyActiveClient(clientId);
                     break;
             }
         }
 
-        // Networking
-        private String processIncommingConnection(ref Socket sock)
+        private void initiateAuthentication(String clientId, String username)
         {
-            // 1 - initialize a buffer for the incoming message and listen for the message
-            sock.ReceiveTimeout = 20000;
-            Byte[] buffer = new byte[2048];
-            int received_bytes = sock.Receive(buffer);
+            // 1 - set the username of the socket with the provided value
+            Client currentClient = clients[clientId];
+            currentClient.username = username;
 
-            if (received_bytes == 0)
+            // 2 - generate random 128 bit numbers and send it
+            Byte[] randomBytes = random128bit();
+            transmitClear(randomBytes, ref currentClient.socket, "a");
+
+            // 3 - save the sent random bytes
+            currentClient.authChallengeValue = randomBytes;
+        }
+
+        private void verifyAuthentication(String clientId, Byte[] receivedHMAC)
+        {
+            Client currentClient = clients[clientId];
+            Byte[] userPassword = enrolledMembers[currentClient.username];
+            Byte[] hmacValue = applyHMACwithSHA256(Encoding.Default.GetString(currentClient.authChallengeValue), userPassword);
+
+            if (receivedHMAC == hmacValue)
             {
-                return "";
+                transmitSigned("ack_positive", ref currentClient.socket, "a");
+                log("Authorization to " + currentClient.username + " successful!");
+                currentClient.isAuthenticated = true;
             }
+            else
+            {
+                transmitSigned("ack_negative", ref currentClient.socket, "a");
+                log("Authorization to " + currentClient.username + " failed!");
+                destroyActiveClient(clientId);
+            }
+        }
 
-            buffer = buffer.Take(received_bytes).ToArray();
+        private void transmitSigned(String message, ref Socket sock, String flag)
+        {
+            Byte[] signature = signWithRSA3072(message); // 384 bytes
+            Byte[] encodedMessage = Encoding.Default.GetBytes(message);
+            Byte[] encodedFlag = Encoding.Default.GetBytes(flag + "|");
 
-            Byte[] decryptedBuffer = decryptWithRSA3072(buffer);
+            Byte[] finalMessage = encodedFlag.Concat(signature.Concat(encodedMessage)).ToArray();
+
+            String finalMessageString = Encoding.Default.GetString(finalMessage);
+
+            sock.Send(finalMessage);
+        }
+
+        private void transmitClear(String message, ref Socket sock, String flag)
+        {
+            Byte[] encodedMessage = Encoding.Default.GetBytes(flag + "|" + message);
+            sock.Send(encodedMessage);
+        }
+
+        private void transmitClear(Byte[] message, ref Socket sock, String flag)
+        {
+            Byte[] transmissionMessage = Encoding.Default.GetBytes(flag + "|").Concat(message).ToArray();
+            int sentBytes = sock.Send(transmissionMessage);
+        }
+
+        private void enrollUser(String clientId, Byte[] received)
+        {
+            // Enrolls a user to the database and returns <username, passwordHash
+
+            Socket sock = clients[clientId].socket;
+
+            // 1 - initialize a buffer for the incoming message and listen for the 
+            Byte[] decryptedBuffer = decryptWithRSA3072(received);
 
             Byte[] passwordHash = decryptedBuffer.Take(16).ToArray();
             String username = Encoding.Default.GetString(decryptedBuffer.Skip(16).ToArray());
 
             // 2 - check if the username already exists, then act accordingly
-            if (clients.ContainsKey(username))
+            if (enrolledMembers.ContainsKey(username))
             {
                 // reject connection
-                return "";
+                transmitSigned("error", ref sock, "e");
+                return;
             }
 
-            // 3 - if everything is okay, add the new connection to the class-wide clients database & list the client
-            clients[username] = new Client(ref sock, username, passwordHash);
-            listNewUser(username);
+            // 3 - if everything is okay, add the new connection  database & list the 
+            saveUser(username, passwordHash);
+            enrolledMembers[username] = passwordHash;
+            clients[clientId].username = username;
+            clients[clientId].password = passwordHash;
 
-            Thread listener = new Thread(new ParameterizedThreadStart(listenClient));
-            listener.Name = username + " listener";
-            listener.IsBackground = true;
-            listener.Start(clients[username]);
-
-            return username;
+            log("Successfully enrolled user " + username);
+            transmitSigned("success", ref sock, "e");
         }
 
-        private void handleNewConnection()
+        private void listenClient(Object clientId)
+        {
+            String id = (String)clientId;
+            Client currentClient = clients[id];
+
+            Socket socket = currentClient.socket;
+            bool keepListening = currentClient.listening;
+
+            while (serverActive && keepListening)
+            {
+                if (socket.Available > 0)
+                {
+                    Byte[] buffer = new Byte[8192];
+                    int receivedBytes = socket.Receive(buffer);
+                    buffer = buffer.Take(receivedBytes).ToArray();
+
+                    parseMessage(Encoding.Default.GetString(buffer), id);
+                }
+
+                keepListening = currentClient.listening;
+            }
+        
+            transmitClear("", ref socket, "d"); // OLASI PROBLEM
+            socket.Close();
+
+            currentClient.alive = false;
+        }
+
+        private void acceptNewConnection()
         {
             while (serverActive)
             {
@@ -171,19 +318,14 @@ namespace CS432_Server
                     Socket clientSocket = serverSocket.Accept();
 
                     String remoteIP = clientSocket.RemoteEndPoint.ToString();
-                    log("Connection request from " + remoteIP);
+                    log("New connection from " + remoteIP);
 
-                    string connectedUser = processIncommingConnection(ref clientSocket);
+                    String clientId = getClientId();
+                    clients[clientId] = new Client(ref clientSocket, "", null);
 
-                    if (connectedUser == "")
-                    {
-                        log("Connection from " + remoteIP + " is rejected");
-                        clientSocket.Send(encryptWithRSA3072("error"));
-                        continue;
-                    }
-
-                    log("Connected to user: " + connectedUser);
-                    clientSocket.Send(encryptWithRSA3072("success"));
+                    Thread socketListener = new Thread(new ParameterizedThreadStart(listenClient));
+                    socketListener.IsBackground = true;
+                    socketListener.Start(clientId);
                 }
                 catch (CryptographicException e)
                 {
@@ -195,33 +337,6 @@ namespace CS432_Server
                     {
                         log("Stopped listening for incoming connections");;
                     }
-                }
-            }
-        }
-
-        private bool socketIsActive(Socket sock)
-        {
-            return !((sock.Poll(1000, SelectMode.SelectRead) && (sock.Available == 0)) || !sock.Connected);
-        }
-
-        private void listenClient(Object client_object)
-        {
-            Client client = (Client)client_object;
-            Socket socket = client.socket;
-            while (serverActive)
-            {
-                bool socketActive = socketIsActive(socket);
-                if (!socketActive)
-                {
-                    log("User " + client.username + " disconnected");
-                    destroyClient(client.username);
-                }
-
-                if (socket.Available > 0)
-                {
-                    Byte[] buffer = new Byte[256];
-                    socket.Receive(buffer);
-                    parseMessage(Encoding.Default.GetString(buffer), client.username);
                 }
             }
         }
@@ -245,7 +360,7 @@ namespace CS432_Server
             serverSocket.Bind(new IPEndPoint(IPAddress.Any, port));
             serverSocket.Listen(3);
 
-            connectionHandlerThread = new Thread(new ThreadStart(handleNewConnection));
+            connectionHandlerThread = new Thread(new ThreadStart(acceptNewConnection));
             connectionHandlerThread.IsBackground = true;
             connectionHandlerThread.Start();
 
@@ -272,7 +387,8 @@ namespace CS432_Server
             // create RSA object from System.Security.Cryptography
             RSACryptoServiceProvider rsaObject = new RSACryptoServiceProvider(3072);
             // set RSA object with xml string
-            rsaObject.FromXmlString(Encoding.Default.GetString(encryptionKey));
+            String RSAXmlString = Encoding.Default.GetString(encryptionKey);
+            rsaObject.FromXmlString(RSAXmlString);
             return rsaObject.Decrypt(byteInput, true);
         }
 
@@ -285,6 +401,28 @@ namespace CS432_Server
             // set RSA object with xml string
             rsaObject.FromXmlString(Encoding.Default.GetString(encryptionKey));
             return rsaObject.Encrypt(byteInput, true);
+        }
+
+        byte[] signWithRSA3072(string input)
+        {
+            // convert input string to byte array
+            byte[] byteInput = Encoding.Default.GetBytes(input);
+            // create RSA object from System.Security.Cryptography
+            RSACryptoServiceProvider rsaObject = new RSACryptoServiceProvider(3072);
+            // set RSA object with xml string
+            rsaObject.FromXmlString(Encoding.Default.GetString(verificationKey));
+            byte[] result = null;
+
+            try
+            {
+                result = rsaObject.SignData(byteInput, "SHA256");
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine(e.Message);
+            }
+
+            return result;
         }
 
         static byte[] decryptWithAES128(byte[] byteInput, byte[] key, byte[] IV)
@@ -324,13 +462,16 @@ namespace CS432_Server
             return result;
         }
 
-        public static byte[] hexStringToByteArray(string hex)
+        static byte[] applyHMACwithSHA256(string input, Byte[] key)
         {
-            int numberChars = hex.Length;
-            byte[] bytes = new byte[numberChars / 2];
-            for (int i = 0; i < numberChars; i += 2)
-                bytes[i / 2] = Convert.ToByte(hex.Substring(i, 2), 16);
-            return bytes;
+            // convert input string to byte array
+            byte[] byteInput = Encoding.Default.GetBytes(input);
+            // create HMAC applier object from System.Security.Cryptography
+            HMACSHA256 hmacSHA256 = new HMACSHA256(key);
+            // get the result of HMAC operation
+            byte[] result = hmacSHA256.ComputeHash(byteInput);
+
+            return result;
         }
 
         private void loadKeys()
@@ -339,12 +480,12 @@ namespace CS432_Server
             String encryptedVerificationKeysStr;
 
             using (System.IO.StreamReader fileReader =
-            new System.IO.StreamReader(@"C:\\Users\\oranc\\source\\repos\\CS432-Server\\CS432 Server\\CS432 Server\\keys\\encrypted_server_enc_dec_pub_prv.txt"))
+            new System.IO.StreamReader(@"C:\\Users\\oranc\\Desktop\\Course stuff\\cs432 prroject 1\\encrypted_server_enc_dec_pub_prv.txt"))
             {
                 encryptedEncryptionKeysStr = fileReader.ReadLine();
             }
             using (System.IO.StreamReader fileReader =
-            new System.IO.StreamReader(@"C:\\Users\\oranc\\source\\repos\\CS432-Server\\CS432 Server\\CS432 Server\\keys\\encrypted_server_signing_verification_pub_prv.txt"))
+            new System.IO.StreamReader(@"C:\\Users\\oranc\\Desktop\\Course stuff\\cs432 prroject 1\\encrypted_server_signing_verification_pub_prv.txt"))
             {
                 encryptedVerificationKeysStr = fileReader.ReadLine();
             }
@@ -364,6 +505,51 @@ namespace CS432_Server
             catch
             {
                 MessageBox.Show(this, "Key Decryption Failed", "Failure", MessageBoxButtons.OK);
+            }
+        }
+
+        // User Database Operations
+        void saveUser(String username, Byte[] passwordHash)
+        {
+            using (System.IO.StreamWriter file =
+            new System.IO.StreamWriter(databaseFile))
+            {
+                file.WriteLine(username + " " + generateHexStringFromByteArray(passwordHash));
+            }
+        }
+
+        void loadEnrolledMembers()
+        {
+            try
+            {
+                if (!File.Exists(databaseFile))
+                {
+                    log("Database file not existing, creating one.");
+                    File.Create(databaseFile);
+                    return;
+                }
+
+                enrolledMembers = new Dictionary<String, Byte[]>();
+
+                string line;
+                using (System.IO.StreamReader fileReader =
+                new System.IO.StreamReader(databaseFile))
+                {
+                    line = fileReader.ReadLine();
+
+                    if (line == null)
+                    {
+                        return;
+                    }
+
+                    String[] parsedLine = line.Split(' ');
+                    enrolledMembers[parsedLine[0]] = hexStringToByteArray(parsedLine[1]);
+                }
+
+            }
+            catch
+            {
+                MessageBox.Show(this, "An error occured during loading enrolled users", "Error", MessageBoxButtons.OK);
             }
         }
 

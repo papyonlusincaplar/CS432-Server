@@ -50,9 +50,9 @@
             this.label_listViewUsers.AutoSize = true;
             this.label_listViewUsers.Location = new System.Drawing.Point(483, 48);
             this.label_listViewUsers.Name = "label_listViewUsers";
-            this.label_listViewUsers.Size = new System.Drawing.Size(67, 13);
+            this.label_listViewUsers.Size = new System.Drawing.Size(75, 13);
             this.label_listViewUsers.TabIndex = 1;
-            this.label_listViewUsers.Text = "Online Users";
+            this.label_listViewUsers.Text = "Enrolled Users";
             // 
             // textBox_Info
             // 
