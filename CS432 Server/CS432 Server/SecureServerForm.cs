@@ -20,19 +20,20 @@ namespace CS432_Server
         public Client(ref Socket sock, String username, Byte[] password)
         {
             this.socket = sock;
-            this.password = password;
             this.username = username;
             this.alive = true;
             this.listening = true;
         }
 
         public Socket socket;
-        public Byte[] password;
         public String username;
         public bool alive; // has the server decided to terminate the connection?
         public bool listening; // did client send a connection termination request?
-        public Byte[] authChallengeValue = null;
         public bool isAuthenticated = false;
+
+        public Byte[] authChallengeValue = null;
+        public Byte[] enc_sessionKey = null;
+        public Byte[] auth_sessionKey = null;
     }
 
     public partial class SecureServerForm : Form
@@ -99,11 +100,7 @@ namespace CS432_Server
             Client client = clients[clientId];
             client.listening = false;
             
-            // wait for listener thread for this client to terminate
-            while (client.alive)
-            {
-                Thread.Sleep(25);
-            }
+            
             clients.Remove(clientId);
 
             listView_Users.Invoke(
@@ -164,6 +161,37 @@ namespace CS432_Server
             return tempId;
         }
 
+        private bool byteArraysEqual(Byte[] array1, Byte[] array2)
+        {
+            int size1 = array1.Length;
+            if (size1 != array2.Length)
+            {
+                return false;
+            }
+
+            for (int i = 0; i < size1; i++)
+            {
+                if (array1[i] != array2[i])
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private void authenticateClient(String clientId)
+        {
+            Client client = clients[clientId];
+
+            client.isAuthenticated = true;
+            client.enc_sessionKey = random128bit();
+            client.auth_sessionKey = random128bit();
+
+            Byte[] sessionKeys = client.enc_sessionKey.Concat(client.auth_sessionKey).ToArray();
+            Byte[] encryptedKeys = encryptWithAES128(sessionKeys, enrolledMembers[client.username], client.authChallengeValue);
+            transmitSigned("OK" + Encoding.Default.GetString(encryptedKeys), ref client.socket, "b");
+        }
         // Networking
         private void parseMessage(String message, String clientId)
         {
@@ -209,19 +237,27 @@ namespace CS432_Server
         private void verifyAuthentication(String clientId, Byte[] receivedHMAC)
         {
             Client currentClient = clients[clientId];
+
+            if (!enrolledMembers.ContainsKey(currentClient.username))
+            {
+                transmitSigned("NO", ref currentClient.socket, "b");
+                log(clients[clientId].username + " is not enrolled!");
+                destroyActiveClient(clientId);
+                return;
+            }
+            
             Byte[] userPassword = enrolledMembers[currentClient.username];
             Byte[] hmacValue = applyHMACwithSHA256(Encoding.Default.GetString(currentClient.authChallengeValue), userPassword);
 
-            if (receivedHMAC == hmacValue)
+            if (byteArraysEqual(receivedHMAC,hmacValue))
             {
-                transmitSigned("ack_positive", ref currentClient.socket, "a");
-                log("Authorization to " + currentClient.username + " successful!");
-                currentClient.isAuthenticated = true;
+                log("Authentication to " + currentClient.username + " successful!");
+                authenticateClient(clientId);
             }
             else
             {
-                transmitSigned("ack_negative", ref currentClient.socket, "a");
-                log("Authorization to " + currentClient.username + " failed!");
+                transmitSigned("NO", ref currentClient.socket, "b");
+                log("Authentication to " + currentClient.username + " failed!");
                 destroyActiveClient(clientId);
             }
         }
@@ -275,7 +311,6 @@ namespace CS432_Server
             saveUser(username, passwordHash);
             enrolledMembers[username] = passwordHash;
             clients[clientId].username = username;
-            clients[clientId].password = passwordHash;
 
             log("Successfully enrolled user " + username);
             transmitSigned("success", ref sock, "e");
@@ -302,8 +337,9 @@ namespace CS432_Server
 
                 keepListening = currentClient.listening;
             }
-        
-            transmitClear("", ref socket, "d"); // OLASI PROBLEM
+
+            log("Connection to " + currentClient.username + " is being terminated");
+            transmitClear("", ref socket, "d");
             socket.Close();
 
             currentClient.alive = false;
@@ -425,6 +461,73 @@ namespace CS432_Server
             return result;
         }
 
+        byte[] encryptWithAES128(string input, byte[] key, byte[] IV)
+        {
+            // convert input string to byte array
+            byte[] byteInput = Encoding.Default.GetBytes(input);
+
+            // create AES object from System.Security.Cryptography
+            RijndaelManaged aesObject = new RijndaelManaged();
+            // since we want to use AES-128
+            aesObject.KeySize = 128;
+            // block size of AES is 128 bits
+            aesObject.BlockSize = 128;
+            // mode -> CipherMode.*
+            aesObject.Mode = CipherMode.CFB;
+            // feedback size should be equal to block size
+            aesObject.FeedbackSize = 128;
+            // set the key
+            aesObject.Key = key;
+            // set the IV
+            aesObject.IV = IV;
+            // create an encryptor with the settings provided
+            ICryptoTransform encryptor = aesObject.CreateEncryptor();
+            byte[] result = null;
+
+            try
+            {
+                result = encryptor.TransformFinalBlock(byteInput, 0, byteInput.Length);
+            }
+            catch (Exception e) // if encryption fails
+            {
+                MessageBox.Show(this, e.Message, "Failure", MessageBoxButtons.OK);
+            }
+
+            return result;
+        }
+
+        byte[] encryptWithAES128(Byte[] byteInput, byte[] key, byte[] IV)
+        {
+            // create AES object from System.Security.Cryptography
+            RijndaelManaged aesObject = new RijndaelManaged();
+            // since we want to use AES-128
+            aesObject.KeySize = 128;
+            // block size of AES is 128 bits
+            aesObject.BlockSize = 128;
+            // mode -> CipherMode.*
+            aesObject.Mode = CipherMode.CFB;
+            // feedback size should be equal to block size
+            aesObject.FeedbackSize = 128;
+            // set the key
+            aesObject.Key = key;
+            // set the IV
+            aesObject.IV = IV;
+            // create an encryptor with the settings provided
+            ICryptoTransform encryptor = aesObject.CreateEncryptor();
+            byte[] result = null;
+
+            try
+            {
+                result = encryptor.TransformFinalBlock(byteInput, 0, byteInput.Length);
+            }
+            catch (Exception e) // if encryption fails
+            {
+                MessageBox.Show(this, e.Message, "Failure", MessageBoxButtons.OK);
+            }
+
+            return result;
+        }
+
         static byte[] decryptWithAES128(byte[] byteInput, byte[] key, byte[] IV)
         {
             // create AES object from System.Security.Cryptography
@@ -512,7 +615,7 @@ namespace CS432_Server
         void saveUser(String username, Byte[] passwordHash)
         {
             using (System.IO.StreamWriter file =
-            new System.IO.StreamWriter(databaseFile))
+            System.IO.File.AppendText(databaseFile))
             {
                 file.WriteLine(username + " " + generateHexStringFromByteArray(passwordHash));
             }
@@ -537,13 +640,13 @@ namespace CS432_Server
                 {
                     line = fileReader.ReadLine();
 
-                    if (line == null)
+                    while (line != null)
                     {
-                        return;
+                        String[] parsedLine = line.Split(' ');
+                        enrolledMembers[parsedLine[0]] = hexStringToByteArray(parsedLine[1]);
+                        line = fileReader.ReadLine();
                     }
 
-                    String[] parsedLine = line.Split(' ');
-                    enrolledMembers[parsedLine[0]] = hexStringToByteArray(parsedLine[1]);
                 }
 
             }
